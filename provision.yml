@@ -1,0 +1,100 @@
+---
+- name: Provision PG Host
+  hosts: all
+  vars:
+    pg_version: 14
+    databases:
+      - name: sample
+        owner: db_owner
+        password: password
+  tasks:
+    - name: Update System
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: true
+      become: true
+
+    - name: Add signing PG Key
+      ansible.builtin.apt_key:
+        url: "https://apt.postgresql.org/pub/repos/apt/ACCC4CF8.asc"
+        state: present
+      become: true
+
+    - name: Add PG Repository
+      ansible.builtin.apt_repository:
+        repo: "deb http://apt.postgresql.org/pub/repos/apt/ jammy-pgdg main"
+        filename: pgdg.list
+        state: present
+        update_cache: true
+      become: true
+
+    - name: Install Postgres
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - "postgresql-{{ pg_version }}"
+        - "postgresql-contrib-{{ pg_version }}"
+        - "python3-psycopg2"
+        - "acl" # cf https://docs.ansible.com/ansible-core/2.16/playbook_guide/playbooks_privilege_escalation.html#risks-of-becoming-an-unprivileged-user
+      become: true
+
+    - name: "Allow md5 connection for the db user"
+      community.postgresql.postgresql_pg_hba:
+        dest: "/etc/postgresql/{{ pg_version }}/main/pg_hba.conf"
+        contype: host
+        databases: all
+        source: all
+        method: md5
+        users: "{{ item.owner }}"
+        create: true
+      loop: "{{ databases }}"
+      become_user: postgres
+      become: true
+
+    - name: Listen on all interfaces
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_version }}/main/postgresql.conf"
+        line: "listen_addresses = '*'"
+        state: present
+      notify: Restart Postgres
+      become_user: postgres
+      become: true
+
+    - name: Force handlers
+      meta: flush_handlers
+
+    - name: Create Databases
+      community.postgresql.postgresql_db:
+        name: "{{ item.name }}"
+        state: present
+      loop: "{{ databases }}"
+      become_user: postgres
+      become: true
+
+    - name: Create Users
+      community.postgresql.postgresql_user:
+        db: "{{ item.name }}"
+        name: "{{ item.owner }}"
+        password: "{{ item.password }}"
+        state: present
+      loop: "{{ databases }}"
+      become_user: postgres
+      become: true
+
+    - name: Grant Users as databases owner
+      community.postgresql.postgresql_owner:
+        obj_type: database
+        obj_name: "{{ item.name }}"
+        new_owner: "{{ item.owner }}"
+        db: "{{ item.name }}"
+      loop: "{{ databases }}"
+      become_user: postgres
+      become: true
+
+  handlers:
+    - name: Restart Postgres
+      ansible.builtin.systemd_service:
+        name: postgresql.service
+        state: restarted
+      become: true
