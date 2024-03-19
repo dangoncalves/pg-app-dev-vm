@@ -62,7 +62,7 @@
       become: true
 
     - name: Force handlers
-      meta: flush_handlers
+      ansible.builtin.meta: flush_handlers
 
     - name: Create Databases
       community.postgresql.postgresql_db:
